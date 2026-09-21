@@ -40,7 +40,7 @@ if grep -R -q '{{' "$next"; then
   fail "australia templates have no leftover placeholders" "$(grep -R '{{' "$next" || true)"
 fi
 
-grep -q '#121c2b' "$next/alacritty.toml" || fail "rendered alacritty uses australia background"
-grep -q '#e8b84a' "$next/shell.toml" || fail "rendered shell uses australia accent"
+grep -q '#0f1a14' "$next/alacritty.toml" || fail "rendered alacritty uses australia background"
+grep -q '#ffcd00' "$next/shell.toml" || fail "rendered shell uses australia accent"
 
 pass "australia theme palette renders a complete generated theme"
