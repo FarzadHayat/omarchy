@@ -61,29 +61,45 @@ EOF
 # so stock libfprint-git enrolls fail with NoSuchDevice even though
 # omarchy-hw-fingerprint correctly detects a reader. They need the community
 # synaTudor TOD stack (libfprint-tod + relinked Windows driver) instead.
-# Scan sysfs directly so this works even if lsusb/usbutils is missing.
-is_tudor_device_present() {
+# Prints the sysfs vendor:product (e.g. 06cb:00be) of the first Tudor reader,
+# so troubleshooting names the exact device instead of whatever 06cb entry
+# lsusb happens to list first. Scans sysfs directly so this works even if
+# lsusb/usbutils is missing.
+tudor_device_id() {
   local usb_devices_path="${OMARCHY_USB_DEVICES_PATH:-/sys/bus/usb/devices}"
   local dev vendor product
   for dev in "$usb_devices_path"/*; do
     [[ -r $dev/idVendor && -r $dev/idProduct ]] || continue
     vendor=$(<"$dev/idVendor")
     product=$(<"$dev/idProduct")
-    if [[ $vendor == "06cb" ]]; then
-      case "$product" in
-        00be | 00da | 00fd | 00ff)
-          return 0
-          ;;
-      esac
-    fi
+    case "$vendor:$product" in
+      06cb:00be | 06cb:00da | 06cb:00fd | 06cb:00ff)
+        printf '%s\n' "$vendor:$product"
+        return 0
+        ;;
+    esac
   done
   return 1
 }
 
+is_tudor_device_present() {
+  tudor_device_id >/dev/null
+}
+
+# libfprint-tod-git (the Tudor community stack) conflicts with libfprint-git:
+# installing libfprint-git would remove the working TOD driver, so its
+# presence means this setup must never reinstall libfprint-git.
+has_tod_stack() {
+  pacman -Q -- libfprint-tod-git &>/dev/null
+}
+
 report_tudor_if_present() {
-  local id
-  id=$(lsusb 2>/dev/null | grep -i "06cb:" | head -n 1 || true)
-  echo -e "\e[33mThis looks like a Synaptics Tudor reader ${id:+( $id )}.\e[0m"
+  local id="${1:-}"
+  if [[ -n $id ]]; then
+    echo -e "\e[33mThis looks like a Synaptics Tudor reader ($id).\e[0m"
+  else
+    echo -e "\e[33mThis looks like a Synaptics Tudor reader.\e[0m"
+  fi
   echo -e "Upstream libfprint does not support Tudor match-on-sensor devices,"
   echo -e "so the stock libfprint-git driver cannot drive it."
   echo -e "\nOptions:"
@@ -91,7 +107,8 @@ report_tudor_if_present() {
   echo -e "     https://github.com/Popax21/synaTudor"
   echo -e "     - Replace libfprint-git with libfprint-tod-git (they conflict),"
   echo -e "       build/install synaTudor (relink branch), enable tudor-host-launcher,"
-  echo -e "       restart fprintd, then re-run enrollment."
+  echo -e "       restart fprintd, then re-run this setup (it keeps the TOD stack"
+  echo -e "       instead of reinstalling libfprint-git)."
   echo -e "     - Note: downloads Synaptics' proprietary Windows driver at build time,"
   echo -e "       needs AUR/manual build, and can crash (tudor_host SIGABRT) —"
   echo -e "       'sudo systemctl restart tudor-host-launcher fprintd' recovers."
@@ -111,7 +128,15 @@ fi
 # needs a pin bump in omarchy-pkgs. It conflicts with stock libfprint, and
 # --noconfirm answers that prompt with N; --ask 4 accepts the replacement in
 # one transaction, so a failed install leaves the existing driver in place.
-if omarchy-pkg-missing libfprint-git fprintd usbutils; then
+# A Tudor machine that already runs libfprint-tod-git must never get
+# libfprint-git: that swap would remove the working TOD driver, so a rerun
+# only tops up fprintd/usbutils and leaves TOD alone.
+if has_tod_stack; then
+  if omarchy-pkg-missing fprintd usbutils; then
+    echo "Installing required packages (keeping libfprint-tod)..."
+    sudo pacman -S --needed --noconfirm --ask 4 -- fprintd usbutils
+  fi
+elif omarchy-pkg-missing libfprint-git fprintd usbutils; then
   echo "Installing required packages..."
   sudo pacman -S --needed --noconfirm --ask 4 -- libfprint-git fprintd usbutils
 fi
@@ -120,7 +145,8 @@ fi
 echo -e "\e[32m\nLet's setup your right index finger as the first fingerprint.\e[0m"
 echo -e "Keep moving the finger around on sensor until the process completes.\n"
 
-if sudo fprintd-enroll "$USER"; then
+if enroll_output=$(sudo fprintd-enroll "$USER" 2>&1); then
+  printf '%s\n' "$enroll_output"
   echo -e "\e[32m\nFingerprint enrolled successfully!\e[0m"
 
   # Verify
@@ -143,9 +169,14 @@ if sudo fprintd-enroll "$USER"; then
     echo -e "\e[31m\nVerification failed. You may want to try enrolling again.\e[0m"
   fi
 else
-  if is_tudor_device_present; then
+  printf '%s\n' "$enroll_output"
+  # The Tudor hint explains only a no-device failure, not a finger-scan
+  # failure on another reader: a machine with both a Tudor and a supported
+  # external reader must not blame Tudor when enrollment on the external one
+  # fails for its own reason. Gate on the actual error text.
+  if tudor_id=$(tudor_device_id) && grep -qiE 'no such device|no devices? available' <<<"$enroll_output"; then
     echo -e "\e[31m\nEnrollment failed: no devices available.\e[0m"
-    report_tudor_if_present
+    report_tudor_if_present "$tudor_id"
   else
     echo -e "\e[31m\nEnrollment failed. Please try again.\e[0m"
   fi
