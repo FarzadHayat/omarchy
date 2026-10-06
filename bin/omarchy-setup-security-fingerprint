@@ -145,8 +145,19 @@ fi
 echo -e "\e[32m\nLet's setup your right index finger as the first fingerprint.\e[0m"
 echo -e "Keep moving the finger around on sensor until the process completes.\n"
 
-if enroll_output=$(sudo fprintd-enroll "$USER" 2>&1); then
-  printf '%s\n' "$enroll_output"
+# Stream enrollment live while keeping a copy: the user needs scan progress
+# and retry guidance while their finger is on the reader, and the failure
+# branch needs the text to decide whether the Tudor hint applies. pipefail
+# stays scoped to this pipeline so no other exit status changes meaning.
+enroll_log=$(mktemp)
+set -o pipefail
+enroll_status=0
+sudo fprintd-enroll "$USER" 2>&1 | tee "$enroll_log" || enroll_status=$?
+set +o pipefail
+enroll_output=$(<"$enroll_log")
+rm -f "$enroll_log"
+
+if (( enroll_status == 0 )); then
   echo -e "\e[32m\nFingerprint enrolled successfully!\e[0m"
 
   # Verify
@@ -169,7 +180,6 @@ if enroll_output=$(sudo fprintd-enroll "$USER" 2>&1); then
     echo -e "\e[31m\nVerification failed. You may want to try enrolling again.\e[0m"
   fi
 else
-  printf '%s\n' "$enroll_output"
   # The Tudor hint explains only a no-device failure, not a finger-scan
   # failure on another reader: a machine with both a Tudor and a supported
   # external reader must not blame Tudor when enrollment on the external one

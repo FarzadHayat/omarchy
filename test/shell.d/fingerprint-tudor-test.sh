@@ -140,6 +140,13 @@ ENROLL_OUTPUT="$NO_DEVICE_OUTPUT" run_setup_expecting_enroll_failure
 grep -q 'Please try again' "$scratch/output" || fail "empty sysfs keeps the general message"
 pass "empty sysfs keeps the general message"
 
+# Enrollment's own output must reach the user, not be swallowed by the error
+# check: scan progress is the only guidance while the finger is moving.
+write_usb_devices "06cb:00be"
+ENROLL_OUTPUT="scan-marker-741 $NO_DEVICE_OUTPUT" run_setup_expecting_enroll_failure
+grep -q 'scan-marker-741' "$scratch/output" || fail "enrollment output reaches the user"
+pass "enrollment output reaches the user"
+
 # A rerun with the TOD stack installed must not touch pacman at all, or the
 # libfprint-git install would remove the working TOD driver.
 write_usb_devices "06cb:00be"
