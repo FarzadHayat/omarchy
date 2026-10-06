@@ -56,6 +56,49 @@ EOF
   fi
 }
 
+# Synaptics Tudor match-on-sensor readers (e.g. 06cb:00be on the Lenovo Yoga
+# C740, plus 00da/00fd/00ff relatives) are not supported by upstream libfprint,
+# so stock libfprint-git enrolls fail with NoSuchDevice even though
+# omarchy-hw-fingerprint correctly detects a reader. They need the community
+# synaTudor TOD stack (libfprint-tod + relinked Windows driver) instead.
+# Scan sysfs directly so this works even if lsusb/usbutils is missing.
+is_tudor_device_present() {
+  local usb_devices_path="${OMARCHY_USB_DEVICES_PATH:-/sys/bus/usb/devices}"
+  local dev vendor product
+  for dev in "$usb_devices_path"/*; do
+    [[ -r $dev/idVendor && -r $dev/idProduct ]] || continue
+    vendor=$(<"$dev/idVendor")
+    product=$(<"$dev/idProduct")
+    if [[ $vendor == "06cb" ]]; then
+      case "$product" in
+        00be | 00da | 00fd | 00ff)
+          return 0
+          ;;
+      esac
+    fi
+  done
+  return 1
+}
+
+report_tudor_if_present() {
+  local id
+  id=$(lsusb 2>/dev/null | grep -i "06cb:" | head -n 1 || true)
+  echo -e "\e[33mThis looks like a Synaptics Tudor reader ${id:+( $id )}.\e[0m"
+  echo -e "Upstream libfprint does not support Tudor match-on-sensor devices,"
+  echo -e "so the stock libfprint-git driver cannot drive it."
+  echo -e "\nOptions:"
+  echo -e "  1. Use the community synaTudor TOD stack:"
+  echo -e "     https://github.com/Popax21/synaTudor"
+  echo -e "     - Replace libfprint-git with libfprint-tod-git (they conflict),"
+  echo -e "       build/install synaTudor (relink branch), enable tudor-host-launcher,"
+  echo -e "       restart fprintd, then re-run enrollment."
+  echo -e "     - Note: downloads Synaptics' proprietary Windows driver at build time,"
+  echo -e "       needs AUR/manual build, and can crash (tudor_host SIGABRT) —"
+  echo -e "       'sudo systemctl restart tudor-host-launcher fprintd' recovers."
+  echo -e "  2. Stay on password-only auth and skip fingerprint for this device."
+}
+
+
 echo -e "\e[32mSetting up fingerprint scanner for authentication.\n\e[0m"
 
 # Bail before installing anything if there's no reader to talk to.
@@ -100,6 +143,11 @@ if sudo fprintd-enroll "$USER"; then
     echo -e "\e[31m\nVerification failed. You may want to try enrolling again.\e[0m"
   fi
 else
-  echo -e "\e[31m\nEnrollment failed. Please try again.\e[0m"
+  if is_tudor_device_present; then
+    echo -e "\e[31m\nEnrollment failed: no devices available.\e[0m"
+    report_tudor_if_present
+  else
+    echo -e "\e[31m\nEnrollment failed. Please try again.\e[0m"
+  fi
   exit 1
 fi
